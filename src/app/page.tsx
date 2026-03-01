@@ -52,7 +52,7 @@ export default function Home() {
             target="_blank"
             className="px-4 py-2 bg-pink-600 hover:bg-pink-700 rounded-lg text-sm font-semibold transition-colors"
           >
-            Open Player
+            DJ Console
           </a>
         </div>
       </header>
@@ -92,11 +92,10 @@ export default function Home() {
             Cast to your TV
           </h2>
           <ol className="text-gray-400 text-sm space-y-1 list-decimal list-inside">
-            <li>Click &quot;Open Player&quot; above to open the full-screen player</li>
-            <li>In Chrome, click the three-dot menu &rarr; &quot;Cast...&quot;</li>
-            <li>Select your Chromecast device</li>
-            <li>Choose &quot;Cast tab&quot; to send the player to your TV</li>
-            <li>Come back here on your phone to manage the queue!</li>
+            <li>On a laptop, open the &quot;DJ Console&quot; and click &quot;Launch TV Window&quot;</li>
+            <li>YouTube opens in a new window &mdash; cast <em>that</em> tab to your Chromecast</li>
+            <li>Use the DJ Console to advance songs &mdash; the TV updates automatically</li>
+            <li>Add songs here on your phone while the party plays!</li>
           </ol>
         </section>
       </main>

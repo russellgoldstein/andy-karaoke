@@ -1,79 +1,75 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { getYouTubeThumbnail } from "@/lib/youtube";
 import type { QueueItem } from "@/lib/queue";
 
-// YouTube IFrame API types
-interface YTPlayer {
-  playVideo: () => void;
-  destroy: () => void;
-}
-
-interface YTPlayerEvent {
-  target: YTPlayer;
-  data: number;
-}
-
-declare global {
-  interface Window {
-    YT: {
-      Player: new (
-        el: string | HTMLElement,
-        config: Record<string, unknown>
-      ) => YTPlayer;
-      PlayerState: { ENDED: number };
-    };
-    onYouTubeIframeAPIReady: () => void;
-  }
-}
-
-function loadYouTubeAPI(): Promise<void> {
-  return new Promise((resolve) => {
-    if (window.YT) {
-      resolve();
-      return;
-    }
-    window.onYouTubeIframeAPIReady = () => resolve();
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-  });
-}
-
 export default function PlayerPage() {
-  const [current, setCurrent] = useState<QueueItem | null>(null);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [totalSongs, setTotalSongs] = useState(0);
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [embedError, setEmbedError] = useState(false);
-  const playerRef = useRef<YTPlayer | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  // Track the video ID we're currently showing to avoid re-creating player needlessly
-  const activeVideoIdRef = useRef<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [tvWindow, setTvWindow] = useState<Window | null>(null);
+  const [tvOpen, setTvOpen] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchCurrent = useCallback(async () => {
-    try {
-      const res = await fetch("/api/queue/current");
-      const data = await res.json();
-      setCurrent(data.current);
-      setCurrentIndex(data.currentIndex);
-      setTotalSongs(data.totalSongs);
-    } catch (err) {
-      console.error("Failed to fetch current song:", err);
-    }
-  }, []);
+  const current = queue.length > 0 && currentIndex < queue.length ? queue[currentIndex] : null;
+  const nextSong = queue.length > currentIndex + 1 ? queue[currentIndex + 1] : null;
 
   const fetchQueue = useCallback(async () => {
     try {
       const res = await fetch("/api/queue");
       const data = await res.json();
       setQueue(data.queue);
+      setCurrentIndex(data.currentIndex);
     } catch (err) {
       console.error("Failed to fetch queue:", err);
     }
   }, []);
 
-  const advanceToNext = useCallback(async () => {
+  // Poll for queue updates
+  useEffect(() => {
+    fetchQueue();
+    pollRef.current = setInterval(fetchQueue, 3000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [fetchQueue]);
+
+  // Check if TV window is still open
+  useEffect(() => {
+    const check = setInterval(() => {
+      if (tvWindow && tvWindow.closed) {
+        setTvWindow(null);
+        setTvOpen(false);
+      }
+    }, 1000);
+    return () => clearInterval(check);
+  }, [tvWindow]);
+
+  const openTvWindow = () => {
+    if (!current) return;
+    const url = `https://www.youtube.com/watch?v=${current.videoId}`;
+    const win = window.open(url, "karaoke-tv");
+    if (win) {
+      setTvWindow(win);
+      setTvOpen(true);
+    }
+  };
+
+  const playOnTv = (videoId: string) => {
+    const url = `https://www.youtube.com/watch?v=${videoId}&autoplay=1`;
+    if (tvWindow && !tvWindow.closed) {
+      tvWindow.location.href = url;
+      tvWindow.focus();
+    } else {
+      const win = window.open(url, "karaoke-tv");
+      if (win) {
+        setTvWindow(win);
+        setTvOpen(true);
+      }
+    }
+  };
+
+  const handleNext = async () => {
     try {
       const res = await fetch("/api/queue/next", {
         method: "POST",
@@ -81,189 +77,198 @@ export default function PlayerPage() {
         body: JSON.stringify({}),
       });
       const data = await res.json();
-      setCurrent(data.current);
       setCurrentIndex(data.currentIndex);
-      setTotalSongs(data.totalSongs);
+      if (data.current) {
+        playOnTv(data.current.videoId);
+      }
       fetchQueue();
     } catch (err) {
       console.error("Failed to advance:", err);
     }
-  }, [fetchQueue]);
+  };
 
-  // Create / recreate the YouTube player when the current song changes
-  useEffect(() => {
-    if (!current) {
-      activeVideoIdRef.current = null;
-      return;
-    }
-    if (current.videoId === activeVideoIdRef.current) return;
-    activeVideoIdRef.current = current.videoId;
-    setEmbedError(false);
-
-    let cancelled = false;
-
-    (async () => {
-      await loadYouTubeAPI();
-      if (cancelled) return;
-
-      // Destroy previous player
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch { /* ignore */ }
-        playerRef.current = null;
+  const handleJumpTo = async (index: number) => {
+    try {
+      const res = await fetch("/api/queue/next", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jumpToIndex: index }),
+      });
+      const data = await res.json();
+      setCurrentIndex(data.currentIndex);
+      if (data.current) {
+        playOnTv(data.current.videoId);
       }
-
-      // Clear the container so YT can inject a fresh iframe
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '<div id="yt-player"></div>';
-      }
-
-      playerRef.current = new window.YT.Player("yt-player", {
-        videoId: current.videoId,
-        width: "100%",
-        height: "100%",
-        playerVars: {
-          autoplay: 1,
-          controls: 1,
-          modestbranding: 1,
-          rel: 0,
-          fs: 1,
-        },
-        events: {
-          onReady: (e: YTPlayerEvent) => {
-            e.target.playVideo();
-          },
-          onStateChange: (e: YTPlayerEvent) => {
-            // ENDED = 0
-            if (e.data === 0) {
-              advanceToNext();
-            }
-          },
-          onError: () => {
-            if (!cancelled) setEmbedError(true);
-          },
-        },
-      } as unknown as Record<string, unknown>);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [current, advanceToNext]);
-
-  // Polling
-  useEffect(() => {
-    fetchCurrent();
-    fetchQueue();
-    const interval = setInterval(() => {
-      fetchCurrent();
       fetchQueue();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [fetchCurrent, fetchQueue]);
-
-  const handleSkip = () => advanceToNext();
-
-  const handleOpenOnYouTube = () => {
-    if (current) {
-      window.open(`https://www.youtube.com/watch?v=${current.videoId}`, "_blank");
+    } catch (err) {
+      console.error("Failed to jump:", err);
     }
   };
 
-  // Next song in queue (for "up next" display)
-  const nextSong = queue.length > currentIndex + 1 ? queue[currentIndex + 1] : null;
-
   return (
-    <div className="h-screen w-screen bg-black text-white flex flex-col overflow-hidden">
-      {/* Video area */}
-      <div className="flex-1 relative flex items-center justify-center">
-        {current ? (
-          <>
-            <div
-              ref={containerRef}
-              className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full"
+    <div className="min-h-screen bg-gray-950 text-white">
+      {/* Header */}
+      <header className="border-b border-gray-800 bg-gray-900/80 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+          <h1 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+            DJ Console
+          </h1>
+          <div className="flex items-center gap-3">
+            <span
+              className={`text-xs px-2 py-1 rounded-full ${
+                tvOpen
+                  ? "bg-green-900 text-green-300"
+                  : "bg-gray-800 text-gray-500"
+              }`}
             >
-              <div id="yt-player" />
-            </div>
+              {tvOpen ? "TV Connected" : "TV Not Open"}
+            </span>
+            <a
+              href="/"
+              className="text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              Add Songs
+            </a>
+          </div>
+        </div>
+      </header>
 
-            {embedError && (
-              <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-10">
-                <div className="text-center space-y-4 px-6">
-                  <p className="text-2xl font-bold text-red-400">
-                    Embedding disabled for this video
+      <main className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+        {/* Now Playing Card */}
+        <section className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+          {current ? (
+            <div className="flex flex-col sm:flex-row">
+              <img
+                src={getYouTubeThumbnail(current.videoId)}
+                alt={current.title}
+                className="w-full sm:w-64 h-48 sm:h-auto object-cover"
+              />
+              <div className="flex-1 p-5 flex flex-col justify-between">
+                <div>
+                  <p className="text-xs text-purple-400 font-semibold uppercase tracking-wider mb-1">
+                    Now Playing
                   </p>
+                  <h2 className="text-2xl font-bold text-white mb-1">
+                    {current.title}
+                  </h2>
                   <p className="text-gray-400">
-                    The video owner doesn&apos;t allow playback on other sites.
+                    Singing: <span className="text-purple-300">{current.singer}</span>
                   </p>
-                  <div className="flex gap-3 justify-center flex-wrap">
+                </div>
+                <div className="flex items-center gap-3 mt-4">
+                  {!tvOpen ? (
                     <button
-                      onClick={handleOpenOnYouTube}
-                      className="px-5 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-semibold transition-colors"
+                      onClick={openTvWindow}
+                      className="px-5 py-2.5 bg-pink-600 hover:bg-pink-700 rounded-lg font-semibold transition-colors"
                     >
-                      Watch on YouTube
+                      Launch TV Window
                     </button>
+                  ) : (
                     <button
-                      onClick={handleSkip}
-                      className="px-5 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-semibold transition-colors"
+                      onClick={() => playOnTv(current.videoId)}
+                      className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold transition-colors"
                     >
-                      Skip to Next
+                      Replay on TV
                     </button>
-                  </div>
+                  )}
+                  <button
+                    onClick={handleNext}
+                    disabled={!nextSong}
+                    className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
+                  >
+                    Next Song &rarr;
+                  </button>
+                  <span className="text-gray-500 text-sm ml-auto">
+                    {currentIndex + 1} / {queue.length}
+                  </span>
                 </div>
               </div>
-            )}
-          </>
-        ) : (
-          <div className="text-center">
-            <h2 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent mb-4">
-              Karaoke Party
-            </h2>
-            <p className="text-gray-400 text-xl">
-              {totalSongs === 0
-                ? "No songs in the queue. Add songs to get started!"
-                : "All songs have been played!"}
-            </p>
-          </div>
+            </div>
+          ) : (
+            <div className="p-8 text-center">
+              <h2 className="text-2xl font-bold text-gray-500 mb-2">
+                No songs in the queue
+              </h2>
+              <p className="text-gray-600">
+                <a href="/" className="text-purple-400 hover:text-purple-300 underline">
+                  Add songs
+                </a>{" "}
+                to get the party started!
+              </p>
+            </div>
+          )}
+        </section>
+
+        {/* Up Next */}
+        {nextSong && (
+          <section className="bg-gray-900/50 rounded-xl border border-gray-800 p-4 flex items-center gap-4">
+            <img
+              src={getYouTubeThumbnail(nextSong.videoId)}
+              alt={nextSong.title}
+              className="w-16 h-12 object-cover rounded"
+            />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Up Next</p>
+              <p className="text-white font-medium truncate">{nextSong.title}</p>
+              <p className="text-gray-500 text-sm">{nextSong.singer}</p>
+            </div>
+          </section>
         )}
-      </div>
 
-      {/* Bottom bar */}
-      <div className="bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-6 py-3 flex items-center justify-between">
-        <div className="flex-1 min-w-0">
-          {current && (
-            <div>
-              <p className="text-white font-semibold truncate">{current.title}</p>
-              <p className="text-purple-400 text-sm">Singing: {current.singer}</p>
-            </div>
-          )}
-        </div>
+        {/* How to Cast */}
+        {!tvOpen && current && (
+          <section className="bg-blue-950/30 border border-blue-900/50 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-blue-300 mb-2">
+              How to Cast to your TV
+            </h3>
+            <ol className="text-blue-200/70 text-sm space-y-1 list-decimal list-inside">
+              <li>Click &quot;Launch TV Window&quot; above &mdash; YouTube opens in a new window</li>
+              <li>On that YouTube window, click the <strong>Cast</strong> icon in Chrome&apos;s toolbar</li>
+              <li>Select your Chromecast &mdash; the video plays on your TV</li>
+              <li>Come back here to control the queue and advance songs</li>
+            </ol>
+          </section>
+        )}
 
-        <div className="flex items-center gap-4 flex-shrink-0">
-          {current && (
-            <button
-              onClick={handleSkip}
-              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
-            >
-              Skip &rarr;
-            </button>
-          )}
-
-          <div className="text-gray-500 text-sm">
-            {totalSongs > 0
-              ? `${currentIndex + 1} / ${totalSongs}`
-              : "Empty queue"}
+        {/* Full Queue */}
+        <section>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+            Playlist ({queue.length} songs)
+          </h3>
+          <div className="space-y-1">
+            {queue.map((item, index) => (
+              <button
+                key={item.id}
+                onClick={() => handleJumpTo(index)}
+                className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors ${
+                  index === currentIndex
+                    ? "bg-purple-900/40 border border-purple-700"
+                    : index < currentIndex
+                    ? "bg-gray-900/30 opacity-50 hover:opacity-75"
+                    : "bg-gray-900/50 hover:bg-gray-800/80"
+                }`}
+              >
+                <span className="text-gray-600 font-mono text-sm w-6 text-center flex-shrink-0">
+                  {index === currentIndex ? (
+                    <span className="text-purple-400">&#9654;</span>
+                  ) : (
+                    index + 1
+                  )}
+                </span>
+                <img
+                  src={getYouTubeThumbnail(item.videoId)}
+                  alt={item.title}
+                  className="w-12 h-9 object-cover rounded flex-shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium truncate">{item.title}</p>
+                  <p className="text-gray-500 text-xs">{item.singer}</p>
+                </div>
+              </button>
+            ))}
           </div>
-        </div>
-
-        <div className="flex-1 text-right min-w-0">
-          {nextSong && (
-            <div>
-              <p className="text-gray-500 text-xs">UP NEXT</p>
-              <p className="text-gray-300 text-sm truncate">{nextSong.title}</p>
-              <p className="text-gray-500 text-xs truncate">{nextSong.singer}</p>
-            </div>
-          )}
-        </div>
-      </div>
+        </section>
+      </main>
     </div>
   );
 }
