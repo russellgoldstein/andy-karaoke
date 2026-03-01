@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { tmpdir } from "os";
 
 export interface QueueItem {
   id: string;
@@ -15,7 +16,23 @@ interface QueueData {
   currentIndex: number;
 }
 
-const DATA_PATH = join(process.cwd(), "queue-data.json");
+function getDataPath(): string {
+  // Try project root first, fall back to OS temp dir
+  const projectPath = join(process.cwd(), "queue-data.json");
+  try {
+    // Test if we can write to the project directory
+    const dir = dirname(projectPath);
+    if (existsSync(dir)) {
+      return projectPath;
+    }
+  } catch { /* fall through */ }
+  // Fallback: use temp directory
+  const fallback = join(tmpdir(), "karaoke-queue-data.json");
+  mkdirSync(dirname(fallback), { recursive: true });
+  return fallback;
+}
+
+const DATA_PATH = getDataPath();
 
 function load(): QueueData {
   if (!existsSync(DATA_PATH)) {

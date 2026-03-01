@@ -25,8 +25,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const item = addToQueue(videoId, title, singer || "Anonymous");
-  return NextResponse.json(item, { status: 201 });
+  try {
+    const item = addToQueue(videoId, title, singer || "Anonymous");
+    return NextResponse.json(item, { status: 201 });
+  } catch (err) {
+    console.error("Failed to add song:", err);
+    return NextResponse.json(
+      { error: String(err) },
+      { status: 500 }
+    );
+  }
 }
 
 export async function DELETE(request: NextRequest) {

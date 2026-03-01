@@ -42,15 +42,16 @@ export default function AddSong({ onSongAdded }: AddSongProps) {
       });
 
       if (!res.ok) {
-        throw new Error("Failed to add song");
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Server error (${res.status})`);
       }
 
       setUrl("");
       setTitle("");
       setSinger("");
       onSongAdded();
-    } catch {
-      setError("Failed to add song. Please try again.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add song. Please try again.");
     } finally {
       setLoading(false);
     }
