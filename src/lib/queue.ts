@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface QueueItem {
   id: string;
@@ -18,7 +18,7 @@ export function getQueue(): QueueItem[] {
 
 export function addToQueue(videoId: string, title: string, singer: string): QueueItem {
   const item: QueueItem = {
-    id: uuidv4(),
+    id: randomUUID(),
     videoId,
     title,
     singer,
