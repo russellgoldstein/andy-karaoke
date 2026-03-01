@@ -1,4 +1,6 @@
 import { randomUUID } from "crypto";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
 
 export interface QueueItem {
   id: string;
@@ -8,15 +10,35 @@ export interface QueueItem {
   addedAt: number;
 }
 
-// In-memory queue store (persists as long as the server process runs)
-const queue: QueueItem[] = [];
-let currentIndex = 0;
+interface QueueData {
+  queue: QueueItem[];
+  currentIndex: number;
+}
+
+const DATA_PATH = join(process.cwd(), "queue-data.json");
+
+function load(): QueueData {
+  if (!existsSync(DATA_PATH)) {
+    return { queue: [], currentIndex: 0 };
+  }
+  try {
+    const raw = readFileSync(DATA_PATH, "utf-8");
+    return JSON.parse(raw) as QueueData;
+  } catch {
+    return { queue: [], currentIndex: 0 };
+  }
+}
+
+function save(data: QueueData): void {
+  writeFileSync(DATA_PATH, JSON.stringify(data, null, 2));
+}
 
 export function getQueue(): QueueItem[] {
-  return [...queue];
+  return [...load().queue];
 }
 
 export function addToQueue(videoId: string, title: string, singer: string): QueueItem {
+  const data = load();
   const item: QueueItem = {
     id: randomUUID(),
     videoId,
@@ -24,53 +46,63 @@ export function addToQueue(videoId: string, title: string, singer: string): Queu
     singer,
     addedAt: Date.now(),
   };
-  queue.push(item);
+  data.queue.push(item);
+  save(data);
   return item;
 }
 
 export function removeFromQueue(id: string): boolean {
-  const index = queue.findIndex((item) => item.id === id);
+  const data = load();
+  const index = data.queue.findIndex((item) => item.id === id);
   if (index === -1) return false;
-  queue.splice(index, 1);
+  data.queue.splice(index, 1);
   // Adjust currentIndex if needed
-  if (index < currentIndex) {
-    currentIndex = Math.max(0, currentIndex - 1);
-  } else if (currentIndex >= queue.length) {
-    currentIndex = Math.max(0, queue.length - 1);
+  if (index < data.currentIndex) {
+    data.currentIndex = Math.max(0, data.currentIndex - 1);
+  } else if (data.currentIndex >= data.queue.length) {
+    data.currentIndex = Math.max(0, data.queue.length - 1);
   }
+  save(data);
   return true;
 }
 
 export function moveInQueue(id: string, newIndex: number): boolean {
-  const oldIndex = queue.findIndex((item) => item.id === id);
+  const data = load();
+  const oldIndex = data.queue.findIndex((item) => item.id === id);
   if (oldIndex === -1) return false;
-  const clamped = Math.max(0, Math.min(newIndex, queue.length - 1));
-  const [item] = queue.splice(oldIndex, 1);
-  queue.splice(clamped, 0, item);
+  const clamped = Math.max(0, Math.min(newIndex, data.queue.length - 1));
+  const [item] = data.queue.splice(oldIndex, 1);
+  data.queue.splice(clamped, 0, item);
+  save(data);
   return true;
 }
 
 export function getCurrentSong(): QueueItem | null {
-  if (queue.length === 0 || currentIndex >= queue.length) return null;
-  return queue[currentIndex];
+  const data = load();
+  if (data.queue.length === 0 || data.currentIndex >= data.queue.length) return null;
+  return data.queue[data.currentIndex];
 }
 
 export function getCurrentIndex(): number {
-  return currentIndex;
+  return load().currentIndex;
 }
 
 export function advanceToNext(): QueueItem | null {
-  if (currentIndex < queue.length - 1) {
-    currentIndex++;
-    return queue[currentIndex];
+  const data = load();
+  if (data.currentIndex < data.queue.length - 1) {
+    data.currentIndex++;
+    save(data);
+    return data.queue[data.currentIndex];
   }
   return null;
 }
 
 export function jumpTo(index: number): QueueItem | null {
-  if (index >= 0 && index < queue.length) {
-    currentIndex = index;
-    return queue[currentIndex];
+  const data = load();
+  if (index >= 0 && index < data.queue.length) {
+    data.currentIndex = index;
+    save(data);
+    return data.queue[data.currentIndex];
   }
   return null;
 }
