@@ -4,12 +4,26 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getYouTubeThumbnail } from "@/lib/youtube";
 import type { QueueItem } from "@/lib/queue";
 
+const DEFAULT_DURATION = 5 * 60; // 5 minutes in seconds
+const DURATION_OPTIONS = [3 * 60, 4 * 60, 5 * 60, 6 * 60, 7 * 60];
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export default function PlayerPage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [tvWindow, setTvWindow] = useState<Window | null>(null);
   const [tvOpen, setTvOpen] = useState(false);
+  const [timerDuration, setTimerDuration] = useState(DEFAULT_DURATION);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [autoAdvance, setAutoAdvance] = useState(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const advancingRef = useRef(false);
 
   const current = queue.length > 0 && currentIndex < queue.length ? queue[currentIndex] : null;
   const nextSong = queue.length > currentIndex + 1 ? queue[currentIndex + 1] : null;
@@ -45,6 +59,46 @@ export default function PlayerPage() {
     return () => clearInterval(check);
   }, [tvWindow]);
 
+  // Countdown timer
+  useEffect(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (timeLeft === null || timeLeft <= 0) return;
+
+    timerRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev === null || prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [timeLeft]);
+
+  // Auto-advance when timer hits 0
+  useEffect(() => {
+    if (timeLeft === 0 && autoAdvance && nextSong && !advancingRef.current) {
+      advancingRef.current = true;
+      doAdvance().finally(() => {
+        advancingRef.current = false;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeft]);
+
+  const startTimer = useCallback(() => {
+    setTimeLeft(timerDuration);
+  }, [timerDuration]);
+
+  const stopTimer = () => {
+    setTimeLeft(null);
+    if (timerRef.current) clearInterval(timerRef.current);
+  };
+
   const openTvWindow = () => {
     if (!current) return;
     const url = `https://www.youtube.com/watch?v=${current.videoId}`;
@@ -52,24 +106,29 @@ export default function PlayerPage() {
     if (win) {
       setTvWindow(win);
       setTvOpen(true);
+      startTimer();
     }
   };
 
-  const playOnTv = (videoId: string) => {
-    const url = `https://www.youtube.com/watch?v=${videoId}&autoplay=1`;
-    if (tvWindow && !tvWindow.closed) {
-      tvWindow.location.href = url;
-      tvWindow.focus();
-    } else {
-      const win = window.open(url, "karaoke-tv");
-      if (win) {
-        setTvWindow(win);
-        setTvOpen(true);
+  const playOnTv = useCallback(
+    (videoId: string) => {
+      const url = `https://www.youtube.com/watch?v=${videoId}&autoplay=1`;
+      if (tvWindow && !tvWindow.closed) {
+        tvWindow.location.href = url;
+        tvWindow.focus();
+      } else {
+        const win = window.open(url, "karaoke-tv");
+        if (win) {
+          setTvWindow(win);
+          setTvOpen(true);
+        }
       }
-    }
-  };
+      startTimer();
+    },
+    [tvWindow, startTimer]
+  );
 
-  const handleNext = async () => {
+  const doAdvance = async () => {
     try {
       const res = await fetch("/api/queue/next", {
         method: "POST",
@@ -87,7 +146,13 @@ export default function PlayerPage() {
     }
   };
 
+  const handleNext = async () => {
+    stopTimer();
+    await doAdvance();
+  };
+
   const handleJumpTo = async (index: number) => {
+    stopTimer();
     try {
       const res = await fetch("/api/queue/next", {
         method: "POST",
@@ -104,6 +169,9 @@ export default function PlayerPage() {
       console.error("Failed to jump:", err);
     }
   };
+
+  const progressPercent =
+    timeLeft !== null ? ((timerDuration - timeLeft) / timerDuration) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -137,66 +205,159 @@ export default function PlayerPage() {
         {/* Now Playing Card */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
           {current ? (
-            <div className="flex flex-col sm:flex-row">
-              <img
-                src={getYouTubeThumbnail(current.videoId)}
-                alt={current.title}
-                className="w-full sm:w-64 h-48 sm:h-auto object-cover"
-              />
-              <div className="flex-1 p-5 flex flex-col justify-between">
-                <div>
-                  <p className="text-xs text-purple-400 font-semibold uppercase tracking-wider mb-1">
-                    Now Playing
-                  </p>
-                  <h2 className="text-2xl font-bold text-white mb-1">
-                    {current.title}
-                  </h2>
-                  <p className="text-gray-400">
-                    Singing: <span className="text-purple-300">{current.singer}</span>
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 mt-4">
-                  {!tvOpen ? (
+            <>
+              <div className="flex flex-col sm:flex-row">
+                <img
+                  src={getYouTubeThumbnail(current.videoId)}
+                  alt={current.title}
+                  className="w-full sm:w-64 h-48 sm:h-auto object-cover"
+                />
+                <div className="flex-1 p-5 flex flex-col justify-between">
+                  <div>
+                    <p className="text-xs text-purple-400 font-semibold uppercase tracking-wider mb-1">
+                      Now Playing
+                    </p>
+                    <h2 className="text-2xl font-bold text-white mb-1">
+                      {current.title}
+                    </h2>
+                    <p className="text-gray-400">
+                      Singing:{" "}
+                      <span className="text-purple-300">{current.singer}</span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 mt-4">
+                    {!tvOpen ? (
+                      <button
+                        onClick={openTvWindow}
+                        className="px-5 py-2.5 bg-pink-600 hover:bg-pink-700 rounded-lg font-semibold transition-colors"
+                      >
+                        Launch TV Window
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          stopTimer();
+                          playOnTv(current.videoId);
+                        }}
+                        className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold transition-colors"
+                      >
+                        Replay on TV
+                      </button>
+                    )}
                     <button
-                      onClick={openTvWindow}
-                      className="px-5 py-2.5 bg-pink-600 hover:bg-pink-700 rounded-lg font-semibold transition-colors"
+                      onClick={handleNext}
+                      disabled={!nextSong}
+                      className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
                     >
-                      Launch TV Window
+                      Next Song &rarr;
                     </button>
-                  ) : (
-                    <button
-                      onClick={() => playOnTv(current.videoId)}
-                      className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold transition-colors"
-                    >
-                      Replay on TV
-                    </button>
-                  )}
-                  <button
-                    onClick={handleNext}
-                    disabled={!nextSong}
-                    className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
-                  >
-                    Next Song &rarr;
-                  </button>
-                  <span className="text-gray-500 text-sm ml-auto">
-                    {currentIndex + 1} / {queue.length}
-                  </span>
+                    <span className="text-gray-500 text-sm ml-auto">
+                      {currentIndex + 1} / {queue.length}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+
+              {/* Progress / Timer Bar */}
+              {timeLeft !== null && (
+                <div className="border-t border-gray-800">
+                  {/* Progress bar */}
+                  <div className="h-1 bg-gray-800">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-1000 ease-linear"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                  <div className="px-5 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl font-mono text-white tabular-nums">
+                        {formatTime(timeLeft)}
+                      </span>
+                      <span className="text-gray-500 text-sm">remaining</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          setTimeLeft((prev) =>
+                            prev !== null ? Math.max(0, prev - 30) : null
+                          )
+                        }
+                        className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+                      >
+                        -30s
+                      </button>
+                      <button
+                        onClick={() =>
+                          setTimeLeft((prev) =>
+                            prev !== null ? prev + 30 : null
+                          )
+                        }
+                        className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+                      >
+                        +30s
+                      </button>
+                      <button
+                        onClick={stopTimer}
+                        className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors text-red-400"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="p-8 text-center">
               <h2 className="text-2xl font-bold text-gray-500 mb-2">
                 No songs in the queue
               </h2>
               <p className="text-gray-600">
-                <a href="/" className="text-purple-400 hover:text-purple-300 underline">
+                <a
+                  href="/"
+                  className="text-purple-400 hover:text-purple-300 underline"
+                >
                   Add songs
                 </a>{" "}
                 to get the party started!
               </p>
             </div>
           )}
+        </section>
+
+        {/* Timer Settings */}
+        <section className="bg-gray-900/50 rounded-xl border border-gray-800 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoAdvance}
+                  onChange={(e) => setAutoAdvance(e.target.checked)}
+                  className="w-4 h-4 rounded accent-purple-500"
+                />
+                <span className="text-sm text-gray-300">
+                  Auto-advance when timer ends
+                </span>
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Song timer:</span>
+              {DURATION_OPTIONS.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setTimerDuration(d)}
+                  className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                    timerDuration === d
+                      ? "bg-purple-600 text-white"
+                      : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                  }`}
+                >
+                  {d / 60}m
+                </button>
+              ))}
+            </div>
+          </div>
         </section>
 
         {/* Up Next */}
@@ -208,7 +369,9 @@ export default function PlayerPage() {
               className="w-16 h-12 object-cover rounded"
             />
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-gray-500 uppercase tracking-wider">Up Next</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wider">
+                Up Next
+              </p>
               <p className="text-white font-medium truncate">{nextSong.title}</p>
               <p className="text-gray-500 text-sm">{nextSong.singer}</p>
             </div>
@@ -222,9 +385,17 @@ export default function PlayerPage() {
               How to Cast to your TV
             </h3>
             <ol className="text-blue-200/70 text-sm space-y-1 list-decimal list-inside">
-              <li>Click &quot;Launch TV Window&quot; above &mdash; YouTube opens in a new window</li>
-              <li>On that YouTube window, click the <strong>Cast</strong> icon in Chrome&apos;s toolbar</li>
-              <li>Select your Chromecast &mdash; the video plays on your TV</li>
+              <li>
+                Click &quot;Launch TV Window&quot; above &mdash; YouTube opens in
+                a new window
+              </li>
+              <li>
+                On that YouTube window, click the <strong>Cast</strong> icon in
+                Chrome&apos;s toolbar
+              </li>
+              <li>
+                Select your Chromecast &mdash; the video plays on your TV
+              </li>
               <li>Come back here to control the queue and advance songs</li>
             </ol>
           </section>
@@ -261,7 +432,9 @@ export default function PlayerPage() {
                   className="w-12 h-9 object-cover rounded flex-shrink-0"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-white text-sm font-medium truncate">{item.title}</p>
+                  <p className="text-white text-sm font-medium truncate">
+                    {item.title}
+                  </p>
                   <p className="text-gray-500 text-xs">{item.singer}</p>
                 </div>
               </button>
