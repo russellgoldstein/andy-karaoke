@@ -1,6 +1,12 @@
 import { randomUUID } from "crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  accessSync,
+  constants,
+} from "fs";
+import { join } from "path";
 import { tmpdir } from "os";
 
 export interface QueueItem {
@@ -17,19 +23,15 @@ interface QueueData {
 }
 
 function getDataPath(): string {
-  // Try project root first, fall back to OS temp dir
-  const projectPath = join(process.cwd(), "queue-data.json");
+  const filename = "queue-data.json";
+  // Try project root first — check the directory is actually writable
+  const projectPath = join(process.cwd(), filename);
   try {
-    // Test if we can write to the project directory
-    const dir = dirname(projectPath);
-    if (existsSync(dir)) {
-      return projectPath;
-    }
-  } catch { /* fall through */ }
-  // Fallback: use temp directory
-  const fallback = join(tmpdir(), "karaoke-queue-data.json");
-  mkdirSync(dirname(fallback), { recursive: true });
-  return fallback;
+    accessSync(process.cwd(), constants.W_OK);
+    return projectPath;
+  } catch { /* directory is read-only (e.g. Vercel), fall through */ }
+  // Fallback: /tmp is writable on Vercel and most serverless platforms
+  return join(tmpdir(), filename);
 }
 
 const DATA_PATH = getDataPath();
